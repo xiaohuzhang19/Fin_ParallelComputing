@@ -1,0 +1,29 @@
+# Data files
+*.csv
+*.xls
+*.xlsx
+~$*
+
+# Documents
+*.doc
+*.docx
+*.pdf
+*.pptx
+*.ppt
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/

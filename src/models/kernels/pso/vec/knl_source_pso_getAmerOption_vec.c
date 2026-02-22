@@ -57,29 +57,42 @@ __kernel void psoAmerOption_gb3_vec(
     float dt = T / n_PERIOD;
     float tmp_cost = 0.0f;
 
-    // 每个线程处理VEC_SIZE个路径
+    // 每个线程处理VEC_SIZE个路径 (Each thread handles VEC_SIZE paths)
     for (int vec_path=0; vec_path<n_VecPath; vec_path++){
-        int_vec bound_idx = (int_vec)(n_PERIOD - 1);            // init to last period
+        int_vec bound_idx = (int_vec)(n_PERIOD - 1);            // init to last period (exercise at maturity if no early crossing)
         int St_T_idx = (n_PERIOD-1) * n_VecPath + vec_path;
         float_vec early_excise = St_vec[St_T_idx];               // init to St path_i last period price
 
-        #pragma unroll 8 //VEC_SIZE
+        /* OLD BUGGY CODE - BACKWARD ITERATION (INCORRECT!)
+        // This loop iterated BACKWARD and found the LAST crossing instead of FIRST
+        // Commented out on 2026-02-16 - caused 5x pricing error vs NumPy
+        #pragma unroll 8
         for (int prd=n_PERIOD-1; prd>-1; prd--){
             float cur_fish_val = pso[gid + prd * nParticle];
             float_vec cur_St_val = St_vec[vec_path + prd * n_VecPath];
-
-            // 向量化比较更新
             int_vec cmp_mask = isgreaterequal((float_vec)cur_fish_val, cur_St_val);
-            bound_idx = select(bound_idx, (int_vec)prd, cmp_mask);               // a>b? a:b will be select(b, a, a>b), mind the sequence!!
+            bound_idx = select(bound_idx, (int_vec)prd, cmp_mask);
             early_excise = select(early_excise, cur_St_val, cmp_mask);
+        }
+        */
 
-            // // sanity check
-            // if (gid == 0 && vec_path == 0){
-            //     printf("prd %d | cur_fish_val %.3f | cur_St_val: %.3f %.3f %.3f %.3f | cmp_mask: %d %d %d %d\n", 
-            //         prd, cur_fish_val, cur_St_val.s0, cur_St_val.s1, cur_St_val.s2, cur_St_val.s3, 
-            //         cmp_mask.s0, cmp_mask.s1, cmp_mask.s2, cmp_mask.s3);
-            //     // printf("gid %d, vec_path %d\n", gid, vec_path);
-            // }
+        // FIXED: FORWARD iteration to find FIRST crossing (matches NumPy argmax behavior)
+        // For American options, exercise at EARLIEST profitable opportunity
+        #pragma unroll 8 //VEC_SIZE
+        for (int prd=0; prd<n_PERIOD; prd++){  // FORWARD iteration: 0, 1, 2, ..., T-1
+            float cur_fish_val = pso[gid + prd * nParticle];
+            float_vec cur_St_val = St_vec[vec_path + prd * n_VecPath];
+
+            // Vectorized comparison: check if particle >= St for each vector element
+            int_vec cmp_mask = isgreaterequal((float_vec)cur_fish_val, cur_St_val);
+
+            // Only update if we haven't found a crossing yet (still at initial value)
+            // This ensures we capture the FIRST crossing, not subsequent ones
+            int_vec not_found_yet = (bound_idx == (int_vec)(n_PERIOD - 1));
+            int_vec condition = cmp_mask & not_found_yet;
+
+            bound_idx = select(bound_idx, (int_vec)prd, condition);
+            early_excise = select(early_excise, cur_St_val, condition);
         }
 
         // compute current path present value of simulated American option; then cumulate for average later
