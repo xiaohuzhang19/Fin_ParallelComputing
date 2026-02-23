@@ -75,12 +75,14 @@ class PSO_Numpy(PSOBase):
         # np.argmax returns FIRST True index (searches left-to-right, period 0 -> nPeriod-1)
         # Shape: St is [nPath, nPeriod], in_particle is [nPeriod]
         # Result: boundaryIdx is [nPath] - each path's first crossing index
-        boundaryIdx = np.argmax(self.mc.St < in_particle[None, :], axis=1)   # [0, 1] as of true or false of early cross
+        crossings = self.mc.St < in_particle[None, :]                         # [nPath, nPeriod] bool
+        has_crossing = np.any(crossings, axis=1)                               # [nPath] bool: True if ANY period crossed
+        boundaryIdx = np.argmax(crossings, axis=1)                             # [nPath] first True index (0 if no True)
 
         # Handle case where boundary is NEVER crossed (argmax returns 0 when all False)
-        # If boundaryIdx==0, check if it's a true crossing at t=0 or no crossing at all
-        # If no crossing, set to last period (exercise at maturity)
-        boundaryIdx[boundaryIdx==0] = self.mc.nPeriod - 1    # to handle time T index for boundary index to match St time wise dimension (i.e. indexing from zero)
+        # Only reset to last period for paths with NO crossing at all.
+        # Paths with a genuine crossing at period 0 correctly keep boundaryIdx=0.
+        boundaryIdx[~has_crossing] = self.mc.nPeriod - 1
 
         # Get the stock price at the exercise time for each path
         # exerciseSt[i] = St[path_i, boundaryIdx[i]]
