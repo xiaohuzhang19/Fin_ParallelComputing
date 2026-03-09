@@ -1,10 +1,15 @@
 import numpy as np
 import pyopencl as cl
+from pathlib import Path
 from .mc import MonteCarloBase
 import matplotlib.pyplot as plt
 from .utils import openCLEnv
 
-import time 
+import time
+
+# Get the directory where this file is located for kernel path resolution
+_MODELS_DIR = Path(__file__).parent
+_KERNELS_DIR = _MODELS_DIR / "kernels" 
 
 class PSOBase:
     # const
@@ -60,21 +65,35 @@ class PSO_Numpy(PSOBase):
 
     # Fitness function: Monte Carlo pso American option - CPU: take one particle each time and loop thru PSO
     def _costPsoAmerOption_np(self, in_particle):
-        # # udpated on 6 Apr. 2025 
+        # # udpated on 6 Apr. 2025
         # 1. for unified Z, St shape as [nPath, nPeriod], synced and shared by PSO and Longstaff
         # 2. No concatenation of spot price
         # 3. handle index of time period, spot price at time zero (present), St from time 1 to T
 
-        # get the boundary index where early cross (particle period > St period), as if an early exercise judgement by this fish/particle
-        boundaryIdx = np.argmax(self.mc.St < in_particle[None, :], axis=1)   # [0, 1] as of true or false of early cross
+        # CRITICAL: Find the FIRST time index where particle boundary is crossed (St < particle)
+        # For American options, we exercise at the EARLIEST profitable opportunity
+        # np.argmax returns FIRST True index (searches left-to-right, period 0 -> nPeriod-1)
+        # Shape: St is [nPath, nPeriod], in_particle is [nPeriod]
+        # Result: boundaryIdx is [nPath] - each path's first crossing index
+        crossings = self.mc.St < in_particle[None, :]                         # [nPath, nPeriod] bool
+        has_crossing = np.any(crossings, axis=1)                               # [nPath] bool: True if ANY period crossed
+        boundaryIdx = np.argmax(crossings, axis=1)                             # [nPath] first True index (0 if no True)
 
-        # if no, set boundary index to last time period, meaning no early exercise suggested for that path
-        boundaryIdx[boundaryIdx==0] = self.mc.nPeriod - 1    # to handle time T index for boundary index to match St time wise dimension (i.e. indexing from zero)
+        # Handle case where boundary is NEVER crossed (argmax returns 0 when all False)
+        # Only reset to last period for paths with NO crossing at all.
+        # Paths with a genuine crossing at period 0 correctly keep boundaryIdx=0.
+        boundaryIdx[~has_crossing] = self.mc.nPeriod - 1
 
-        # determine exercise prices by getting the early cross St_ij on path i and period j
+        # Get the stock price at the exercise time for each path
+        # exerciseSt[i] = St[path_i, boundaryIdx[i]]
         exerciseSt = self.mc.St[np.arange(len(boundaryIdx)), boundaryIdx]    # len of boundaryIdx is nPath
         # print(f'pos numpy: boundary & exercise: {boundaryIdx}, {exerciseSt}\n')
-        # discounted back to time zero, hence boundaryIdx+1
+
+        # Calculate present value of option payoff:
+        # - Discount from exercise time (boundaryIdx+1) back to t=0
+        # - boundaryIdx+1 because indices are 0-based but time periods are 1-based
+        # - Payoff: max(0, K-St) for put, max(0, St-K) for call (controlled by opt)
+        # - Average over all paths to get expected value
         searchCost = (np.exp(-self.mc.r * (boundaryIdx+1) * self.dt) * np.maximum(0, (self.mc.K - exerciseSt)*self.mc.opt) ).sum() / self.mc.nPath
         
         return searchCost
@@ -165,10 +184,10 @@ class PSO_OpenCL_hybrid(PSOBase):
         self.BestCosts = np.array([])
 
         # prepare kernels
-        prog = cl.Program(openCLEnv.context, open("./models/kernels/pso/scalar/knl_source_pso_searchGrid.c").read()%(self.nDim)).build()
+        prog = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/scalar/knl_source_pso_searchGrid.c").read_text()%(self.nDim)).build()
         self.knl_searchGrid = cl.Kernel(prog, 'searchGrid')
         # fitness function
-        prog_AmerOpt = cl.Program(openCLEnv.context, open("./models/kernels/pso/scalar/knl_source_pso_getAmerOption.c").read()%(self.mc.nPath, self.mc.nPeriod)).build()
+        prog_AmerOpt = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/scalar/knl_source_pso_getAmerOption.c").read_text()%(self.mc.nPath, self.mc.nPeriod)).build()
         self.knl_psoAmerOption_gb = cl.Kernel(prog_AmerOpt, 'psoAmerOption_gb')
     
     # use GPU to update moves
@@ -317,18 +336,18 @@ class PSO_OpenCL_scalar(PSOBase):
 
         # prepare kernels
         # searchGrid
-        prog_sg = cl.Program(openCLEnv.context, open("./models/kernels/pso/scalar/knl_source_pso_searchGrid.c").read()%(self.nDim)).build()
+        prog_sg = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/scalar/knl_source_pso_searchGrid.c").read_text()%(self.nDim)).build()
         self.knl_searchGrid = cl.Kernel(prog_sg, 'searchGrid')
         # fitness function
         build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros",]
-        prog_AmerOpt = cl.Program(openCLEnv.context, open("./models/kernels/pso/scalar/knl_source_pso_getAmerOption.c").read()%(self.mc.nPath, self.mc.nPeriod)).build(options=build_options)
+        prog_AmerOpt = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/scalar/knl_source_pso_getAmerOption.c").read_text()%(self.mc.nPath, self.mc.nPeriod)).build(options=build_options)
         # prog_AmerOpt = cl.Program(openCLEnv.context, open("./models/kernels/knl_source_pso_getAmerOption.c").read()%(self.mc.nPath, self.mc.nPeriod)).build()
         if direction=='forward':
             self.knl_psoAmerOption_gb = cl.Kernel(prog_AmerOpt, 'psoAmerOption_gb2')
         elif direction=='backward':
             self.knl_psoAmerOption_gb = cl.Kernel(prog_AmerOpt, 'psoAmerOption_gb3')
         # update bests
-        prog_ub = cl.Program(openCLEnv.context, open("./models/kernels/pso/scalar/knl_source_pso_updateBests.c").read()%(self.nDim, self.nFish)).build()
+        prog_ub = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/scalar/knl_source_pso_updateBests.c").read_text()%(self.nDim, self.nFish)).build()
         self.knl_update_pbest = cl.Kernel(prog_ub, 'update_pbest')
         self.knl_update_gbest_pos = cl.Kernel(prog_ub, 'update_gbest_pos')
     
@@ -475,7 +494,7 @@ class PSO_OpenCL_scalar_fusion(PSOBase):
         # prepare kernels
         # searchGrid, fitness function, update pbest
         build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros",]
-        prog = cl.Program(openCLEnv.context, open("./models/kernels/pso/scalar/knl_source_pso_fusion.c").read()%(self.nDim, self.mc.nPath, self.mc.nPeriod, self.nFish)).build(options=build_options)
+        prog = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/scalar/knl_source_pso_fusion.c").read_text()%(self.nDim, self.mc.nPath, self.mc.nPeriod, self.nFish)).build(options=build_options)
         self.knl_pso = cl.Kernel(prog, 'pso')
         # update bests
         self.knl_update_gbest_pos = cl.Kernel(prog, 'update_gbest_pos')
@@ -634,21 +653,21 @@ class PSO_OpenCL_vec(PSOBase):
         # prepare kernels
         # searchGrid
         build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros",]
-        prog_sg = cl.Program(openCLEnv.context, open("./models/kernels/pso/vec/knl_source_pso_searchGrid_vec.c").read()%(self.nDim)).build(options=build_options)
+        prog_sg = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/vec/knl_source_pso_searchGrid_vec.c").read_text()%(self.nDim)).build(options=build_options)
         # self.knl_searchGrid = cl.Kernel(prog_sg, 'searchGrid')
         self.knl_searchGrid = cl.Kernel(prog_sg, 'searchGrid_f2f4')
         # fitness function
         # build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros", f"-DVEC_SIZE={self.vec_size}"]
-        build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros", 
+        build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros",
                          f"-DVEC_SIZE={self.vec_size}",
                          f"-Dn_PATH={self.mc.nPath}",
                          f"-Dn_PERIOD={self.mc.nPeriod}",
                          ]
-        prog_AmerOpt = cl.Program(openCLEnv.context, open("./models/kernels/pso/vec/knl_source_pso_getAmerOption_vec.c").read() ).build(options=build_options)
+        prog_AmerOpt = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/vec/knl_source_pso_getAmerOption_vec.c").read_text() ).build(options=build_options)
         # prog_AmerOpt = cl.Program(openCLEnv.context, open("./models/kernels/knl_source_pso_getAmerOption.c").read()%(self.mc.nPath, self.mc.nPeriod)).build(options=build_options)
         self.knl_psoAmerOption_gb = cl.Kernel(prog_AmerOpt, 'psoAmerOption_gb3_vec')
         # update bests
-        prog_ub = cl.Program(openCLEnv.context, open("./models/kernels/pso/vec/knl_source_pso_updateBests_vec.c").read()%(self.nDim, self.nFish)).build()
+        prog_ub = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/vec/knl_source_pso_updateBests_vec.c").read_text()%(self.nDim, self.nFish)).build()
         # self.knl_update_pbest = cl.Kernel(prog_ub, 'update_pbest')
         self.knl_update_pbest = cl.Kernel(prog_ub, 'update_pbest_f2f4')
         # self.knl_update_gbest_pos = cl.Kernel(prog_ub, 'update_gbest_pos')
@@ -813,14 +832,14 @@ class PSO_OpenCL_vec_fusion(PSOBase):
 
         # prepare kernels
         # searchGrid, fitness function, update pbest
-        build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros", 
+        build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros",
                          f"-DVEC_SIZE={self.vec_size}",
                          f"-Dn_Dim={self.nDim}",
                          f"-Dn_PATH={self.mc.nPath}",
                          f"-Dn_PERIOD={self.mc.nPeriod}",
                          f"-Dn_Fish={self.nFish}",
                          ]
-        prog = cl.Program(openCLEnv.context, open("./models/kernels/pso/vec/knl_source_pso_fusion_vec.c").read() ).build(options=build_options)
+        prog = cl.Program(openCLEnv.context, (_KERNELS_DIR / "pso/vec/knl_source_pso_fusion_vec.c").read_text() ).build(options=build_options)
         # prog = cl.Program(openCLEnv.context, open("./models/kernels/knl_source_pso_oneKernel_vec.c").read()%(self.nDim, self.mc.nPath, self.mc.nPeriod, self.nFish)).build()
         self.knl_pso = cl.Kernel(prog, 'pso_vec')
         # update bests

@@ -1,10 +1,15 @@
 import numpy as np
 import numpy.linalg as la
 import pyopencl as cl
+from pathlib import Path
 from .mc import MonteCarloBase
 from .utils import openCLEnv
 
 import time
+
+# Get the directory where this file is located for kernel path resolution
+_MODELS_DIR = Path(__file__).parent
+_KERNELS_DIR = _MODELS_DIR / "kernels"
 
 def checkError(a, b):
     err = a - b
@@ -267,11 +272,11 @@ class LSMC_OpenCL(LongStaffBase):
         Xdagger_big_d = cl.Buffer(openCLEnv.context, cl.mem_flags.WRITE_ONLY, size=Xdagger_big.nbytes)
         
         match self.inverseType:
-            case "GJ": 
-                prog = cl.Program(openCLEnv.context, open("./models/kernels/lsmc/knl_src_pre_calc_GaussJordan.c").read()%(self.mc.nPath, self.mc.nPeriod)).build()
+            case "GJ":
+                prog = cl.Program(openCLEnv.context, (_KERNELS_DIR / "lsmc/knl_src_pre_calc_GaussJordan.c").read_text()%(self.mc.nPath, self.mc.nPeriod)).build()
                 knl_preCalcAll = cl.Kernel(prog, 'preCalcAll_GaussJordan')
             case "CA":
-                prog = cl.Program(openCLEnv.context, open('./models/kernels/lsmc/knl_src_pre_calc_ClassicAdjoint.c').read()%(self.mc.nPath, self.mc.nPeriod)).build()
+                prog = cl.Program(openCLEnv.context, (_KERNELS_DIR / "lsmc/knl_src_pre_calc_ClassicAdjoint.c").read_text()%(self.mc.nPath, self.mc.nPeriod)).build()
                 knl_preCalcAll = cl.Kernel(prog, 'preCalcAll_ClassicAdjoint')
 
         # kernel run
@@ -310,7 +315,7 @@ class LSMC_OpenCL(LongStaffBase):
         Xdagger_big_dev = cl.Buffer(openCLEnv.context, cl.mem_flags.WRITE_ONLY, size=Xdagger_big.nbytes)
 
         # Build kernel with optimization flags
-        kernel_src = open(f"./models/kernels/lsmc/knl_src_pre_calc_optimized.c").read()
+        kernel_src = open(f"./src/models/kernels/lsmc/knl_src_pre_calc_optimized.c").read()
         # build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", f"-Dn_PATH={self.mc.nPath}", f"-Dn_PERIOD={self.mc.nPeriod}"]
         build_options = ["-cl-fast-relaxed-math", "-cl-mad-enable", "-cl-no-signed-zeros"]
         prog = cl.Program(openCLEnv.context, kernel_src %(self.mc.nPath, self.mc.nPeriod)).build(options=build_options)

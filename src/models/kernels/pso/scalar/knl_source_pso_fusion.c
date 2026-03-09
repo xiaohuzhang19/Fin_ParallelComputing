@@ -50,21 +50,38 @@ __kernel void pso(
     float tmp_C = 0.0f;
 
     for (int path=0; path<n_PATH; path++){
-        int bound_idx = n_PERIOD - 1;            // init to last period
+        int bound_idx = n_PERIOD - 1;            // init to last period (exercise at maturity if no early crossing)
         int St_T_idx = (n_PERIOD - 1) + path * n_PERIOD;
         float early_excise = St[St_T_idx];       // init to St path_i last period price
 
-        for (int prd=n_PERIOD-1; prd>-1; prd--){
+        /* OLD BUGGY CODE - BACKWARD ITERATION (INCORRECT!)
+        // This loop iterated BACKWARD and found the LAST crossing instead of FIRST
+        // Commented out on 2026-02-16 - caused 5x pricing error vs NumPy
+        for (int prd=n_PERIOD-1; prd>-1; prd--){  // BACKWARD iteration: T-1, T-2, ..., 1, 0
+            float cur_fish_val = position[gid + prd * nParticle];
+            float cur_St_val = St[prd + path * n_PERIOD];
+            bound_idx = select(bound_idx, prd, isgreaterequal(cur_fish_val, cur_St_val));
+            early_excise = select(early_excise, cur_St_val, isgreaterequal(cur_fish_val, cur_St_val));
+        }
+        */
+
+        // FIXED: FORWARD iteration to find FIRST crossing (matches NumPy argmax behavior)
+        // For American options, exercise at EARLIEST profitable opportunity
+        for (int prd=0; prd<n_PERIOD; prd++){  // FORWARD iteration: 0, 1, 2, ..., T-1
             float cur_fish_val = position[gid + prd * nParticle];
             float cur_St_val = St[prd + path * n_PERIOD];
 
-            // check early cross exhaust all periods
-            bound_idx = select(bound_idx, prd, isgreaterequal(cur_fish_val, cur_St_val));               // a>b? a:b will be select(b, a, a>b), mind the sequence!!
-            early_excise = select(early_excise, cur_St_val, isgreaterequal(cur_fish_val, cur_St_val));
+            // Only update bound_idx if we haven't found a crossing yet (still at initial value)
+            // This ensures we capture the FIRST crossing, not subsequent ones
+            int not_found_yet = (bound_idx == n_PERIOD - 1);
+            int condition = isgreaterequal(cur_fish_val, cur_St_val) && not_found_yet;
+
+            bound_idx = select(bound_idx, prd, condition);
+            early_excise = select(early_excise, cur_St_val, condition);
         }
 
         // compute current path present value of simulated American option; then cumulate for average later
-        tmp_C += exp(-r * (bound_idx+1) * dt) * max(0.0f, (K - early_excise)*opt); 
+        tmp_C += exp(-r * (bound_idx+1) * dt) * max(0.0f, (K - early_excise)*opt);
     }
     
     tmp_C = tmp_C / n_PATH;    // get average C_hat for current fish/thread investigation
