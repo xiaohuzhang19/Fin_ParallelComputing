@@ -2,12 +2,14 @@
 PSO & LSMC American Option Pricing - Multi-case test runner.
 Run with: python test_pso.py
 """
+import os
 import sys
 import numpy as np
 from pathlib import Path
 
-# Path setup
+# Path setup — also chdir so relative kernel paths in longstaff.py resolve correctly
 project_root = Path(__file__).parent
+os.chdir(project_root)
 sys.path.insert(0, str(project_root))
 sys.path.insert(0, str(project_root / "src"))
 
@@ -15,6 +17,7 @@ from src.models.mc import hybridMonteCarlo
 import src.models.benchmarks as bm
 from src.models.longstaff import LSMC_OpenCL
 from src.models.pso import (
+    PSO_Numpy,
     PSO_OpenCL_hybrid,
     PSO_OpenCL_scalar,
     PSO_OpenCL_scalar_fusion,
@@ -39,38 +42,51 @@ from src.models.pso import (
 # with the surrounding market data; all others are real market premiums.
 #
 # Pairs are grouped: each moneyness bucket has one Put and one Call.
+
+# Hyperparameters
+N_PATH = 10000  # Simulation paths - tunable
+N_NUMPY_ITER = 5  # PSO_Numpy iterations — limited for speed; used for timing baseline only
+
 TEST_CASES = [
     # ── ATM pair — pre-Lehman (02SEP08) ──────────────────────────────────────
-    ("ATM Put   (d=-50, 02SEP08)", 1277.58, 1280.749, 0.0172, 0.213411, 30/365, "P",  32.4512, 20000, 150, 256),
-    ("ATM Call  (d=+50, 02SEP08)", 1277.58, 1280.343, 0.0172, 0.209699, 30/365, "C",  29.5502, 20000, 150, 256),
+    ("ATM Put   (d=-50, 02SEP08)", 1277.58, 1280.749, 0.0172, 0.213411, 30/365, "P",  32.4512, N_PATH, 200, 256),
+    ("ATM Call  (d=+50, 02SEP08)", 1277.58, 1280.343, 0.0172, 0.209699, 30/365, "C",  29.5502, N_PATH, 200, 256),
 
     # ── ATM pair — TARP rejection (29SEP08, high-vol ATM) ────────────────────
-    ("ATM Put   (d=-50, 29SEP08)", 1106.42, 1106.000, 0.0094, 0.275000, 30/365, "P",  34.0100, 20000, 150, 256),  # *
-    ("ATM Call  (d=+50, 29SEP08)", 1106.42, 1106.000, 0.0094, 0.275000, 30/365, "C",  35.2800, 20000, 150, 256),  # *
+    ("ATM Put   (d=-50, 29SEP08)", 1106.42, 1106.000, 0.0094, 0.275000, 30/365, "P",  34.0100, N_PATH, 200, 256),  # *
+    ("ATM Call  (d=+50, 29SEP08)", 1106.42, 1106.000, 0.0094, 0.275000, 30/365, "C",  35.2800, N_PATH, 200, 256),  # *
 
     # ── OTM pair — Lehman collapse (15SEP08) ─────────────────────────────────
-    ("OTM Put   (d=-25, 15SEP08)", 1192.70, 1126.930, 0.0102, 0.317198, 30/365, "P",  16.9545, 20000, 150, 256),
-    ("OTM Call  (d=+25, 15SEP08)", 1192.70, 1265.262, 0.0102, 0.286691, 30/365, "C",  14.0483, 20000, 150, 256),
+    ("OTM Put   (d=-25, 15SEP08)", 1192.70, 1126.930, 0.0102, 0.317198, 30/365, "P",  16.9545, N_PATH, 200, 256),
+    ("OTM Call  (d=+25, 15SEP08)", 1192.70, 1265.262, 0.0102, 0.286691, 30/365, "C",  14.0483, N_PATH, 200,256),
 
     # ── ITM pair — Lehman collapse (15SEP08, vol spiking) ────────────────────
-    ("ITM Put   (d=-75, 15SEP08)", 1192.70, 1267.000, 0.0102, 0.290000, 30/365, "P",  87.3300, 20000, 150, 256),  # *
-    ("ITM Call  (d=+75, 15SEP08)", 1192.70, 1125.000, 0.0102, 0.330000, 30/365, "C",  86.4800, 20000, 150, 256),  # *
+    ("ITM Put   (d=-75, 15SEP08)", 1192.70, 1267.000, 0.0102, 0.290000, 30/365, "P",  87.3300, N_PATH, 200, 256),  # *
+    ("ITM Call  (d=+75, 15SEP08)", 1192.70, 1125.000, 0.0102, 0.330000, 30/365, "C",  86.4800, N_PATH, 200, 256),  # *
 
     # ── ITM pair — TARP rejection (29SEP08) ──────────────────────────────────
-    ("ITM Put   (d=-75, 29SEP08)", 1106.42, 1174.136, 0.0094, 0.282437, 30/365, "P",  78.9833, 20000, 150, 256),
-    ("ITM Call  (d=+75, 29SEP08)", 1106.42, 1040.000, 0.0094, 0.350000, 30/365, "C",  84.7200, 20000, 150, 256),  # *
+    ("ITM Put   (d=-75, 29SEP08)", 1106.42, 1174.136, 0.0094, 0.282437, 30/365, "P",  78.9833, N_PATH, 200, 256),
+    ("ITM Call  (d=+75, 29SEP08)", 1106.42, 1040.000, 0.0094, 0.350000, 30/365, "C",  84.7200, N_PATH, 200, 256),  # *
 
     # ── Very-OTM pair — TARP rejection (29SEP08, steep skew) ─────────────────
-    ("vOTM Put  (d=-15, 29SEP08)", 1106.42,  987.000, 0.0094, 0.410000, 30/365, "P",  10.7400, 20000, 150, 256),  # *
-    ("vOTM Call (d=+15, 29SEP08)", 1106.42, 1260.221, 0.0094, 0.411432, 30/365, "C",   9.6337, 20000, 150, 256),
+    ("vOTM Put  (d=-15, 29SEP08)", 1106.42,  987.000, 0.0094, 0.410000, 30/365, "P",  10.7400, N_PATH, 200, 256),  # *
+    ("vOTM Call (d=+15, 29SEP08)", 1106.42, 1260.221, 0.0094, 0.411432, 30/365, "C",   9.6337, N_PATH, 200, 256),
 
     # ── Deep-OTM pair — pre-Lehman (02SEP08) ─────────────────────────────────
-    ("dOTM Put  (d=-10, 02SEP08)", 1277.58, 1155.000, 0.0172, 0.270000, 30/365, "P",   4.0100, 20000, 150, 256),  # *
-    ("dOTM Call (d=+10, 02SEP08)", 1277.58, 1365.000, 0.0172, 0.175000, 30/365, "C",   2.9400, 20000, 150, 256),  # *
+    ("dOTM Put  (d=-10, 02SEP08)", 1277.58, 1155.000, 0.0172, 0.270000, 30/365, "P",   4.0100, N_PATH, 200, 256),  # *
+    ("dOTM Call (d=+10, 02SEP08)", 1277.58, 1365.000, 0.0172, 0.175000, 30/365, "C",   2.9400, N_PATH, 200, 256),  # *
 
     # ── Deep-ITM pair — TARP rejection (29SEP08) ─────────────────────────────
-    ("dITM Put  (d=-90, 29SEP08)", 1106.42, 1217.000, 0.0094, 0.250000, 30/365, "P", 113.4100, 20000, 150, 256),  # *
-    ("dITM Call (d=+90, 29SEP08)", 1106.42,  966.000, 0.0094, 0.390000, 30/365, "C", 147.1600, 20000, 150, 256),  # *
+    ("dITM Put  (d=-90, 29SEP08)", 1106.42, 1217.000, 0.0094, 0.250000, 30/365, "P", 113.4100, N_PATH, 150, 256),  # *
+    ("dITM Call (d=+90, 29SEP08)", 1106.42,  966.000, 0.0094, 0.390000, 30/365, "C", 147.1600, N_PATH, 150, 256),  # *
+
+    # ── Synthetic reference cases (reproduced from initial test report) ────────
+    # impl_premium ≈ binomial price from that run (used as market proxy for vs-Mkt column)
+    # ATM Put (d=-50) was the failing case in the old codebase — verifies the bug is fixed
+    ("OTM Put   (S0=100,K=110,T=1y)",    100.0,    110.0,    0.03,    0.30,      1.0,       "P",  16.51, 20000, 200, 256),
+    ("ATM Put   (S0=22.7,K=22.7,T=60d)",  22.7389,  22.7389,  0.0102,  0.502026,  60/365,    "P",   1.82, 10000, 250, 256),
+    ("ITM Put   (S0=100,K=105,T=1y)",    100.0,    105.0,    0.03,    0.20,      1.0,       "P",   9.48, 20000, 200, 256),
+    ("OTM Call  (S0=100,K=105,T=1y)",    100.0,    105.0,    0.05,    0.25,      1.0,       "C",  10.01, 20000, 200, 256),
 ]
 
 TOLERANCE = 0.15   # allow up to 15% relative error vs binomial (MC variance at these path counts)
@@ -98,6 +114,12 @@ def run_case(name, S0, K, r, sigma, T, opttype, impl_premium, nPath, nPeriod, nF
 
     lsmc_results = []
     pso_results  = []
+    cpu_results  = []   # NumPy CPU baseline — timing only (N_NUMPY_ITER iters)
+
+    # ── PSO CPU NumPy (timing baseline) ───────────────────────────────────────
+    pso_np = PSO_Numpy(mc, nFish, iterMax=N_NUMPY_ITER)
+    p_np, t_np, _, _, _ = pso_np.solvePsoAmerOption_np()
+    cpu_results.append(("PSO CPU numpy(*)",  float(p_np), t_np))
 
     # ── LSMC GPU ──────────────────────────────────────────────────────────────
     lsmc_cl = LSMC_OpenCL(mc, preCalc="optimized")
@@ -141,8 +163,23 @@ def run_case(name, S0, K, r, sigma, T, opttype, impl_premium, nPath, nPeriod, nF
             err_mkt = _rel_err(price, impl_premium)
             status = _pass(price, binomial)
             print(f"  {label:<24} {price:>9.4f}  {elapsed_ms:>9.1f} ms  {err_bin:>6.2%}  {err_mkt:>6.2%}  {status}")
+    # CPU NumPy — timing only, price not fully converged at N_NUMPY_ITER iters
+    print(f"  ── PSO CPU baseline ({N_NUMPY_ITER} iters)")
+    for label, price, elapsed_ms in cpu_results:
+        err_bin = _rel_err(price, binomial)
+        print(f"  {label:<24} {price:>9.4f}  {elapsed_ms:>9.1f} ms  {err_bin:>6.2%}  {'(timing only)':>7}")
+    # Print GPU scalar vs CPU ratio
+    sc_t = next((t for lbl, _, t in pso_results if "scalar" in lbl and "fusion" not in lbl), None)
+    vc_t = next((t for lbl, _, t in pso_results if "vec(f8)" in lbl), None)
+    np_t = cpu_results[0][2] if cpu_results else None
+    if sc_t and np_t:
+        ratio_full = (np_t / N_NUMPY_ITER * 30) / sc_t  # extrapolate numpy to 30 iters
+        print(f"  [speedup] GPU scalar vs NumPy (extrapolated): {ratio_full:.1f}x")
+    if vc_t and np_t:
+        ratio_full = (np_t / N_NUMPY_ITER * 30) / vc_t
+        print(f"  [speedup] GPU vec    vs NumPy (extrapolated): {ratio_full:.1f}x")
 
-    all_results = lsmc_results + pso_results
+    all_results = lsmc_results + pso_results + cpu_results
     return all_results, float(binomial), float(impl_premium)
 
 
@@ -181,13 +218,21 @@ def write_report(summary, report_path):
 
         prev_group = None
         for label, price, elapsed_ms in results:
-            group = "LSMC" if "LSMC" in label else "PSO"
+            if "LSMC" in label:
+                group = "LSMC GPU"
+            elif "CPU" in label:
+                group = f"PSO CPU (timing only, {N_NUMPY_ITER} iters)"
+            else:
+                group = "PSO GPU"
             if group != prev_group:
-                lines.append(f"| *{group} GPU* | | | | | |")
+                lines.append(f"| *{group}* | | | | | |")
                 prev_group = group
             err_bin = _rel_err(price, binomial)
             err_mkt = _rel_err(price, mkt)
-            icon = "✅" if _pass(price, binomial) == "PASS" else "❌"
+            if "CPU" in label:
+                icon = "—"   # not evaluated: timing-only run
+            else:
+                icon = "✅" if _pass(price, binomial) == "PASS" else "❌"
             lines.append(f"| {label} | {price:.4f} | {elapsed_ms:.1f} | {err_bin:.2%} | {err_mkt:.2%} | {icon} |")
         lines.append("")
 
@@ -199,7 +244,7 @@ def write_report(summary, report_path):
     for name, _, binomial, mkt, results, ok in summary:
         icon = "✅" if ok else "❌"
         lsmc_p = [p for lbl, p, _ in results if "LSMC" in lbl]
-        pso_p  = [p for lbl, p, _ in results if "PSO"  in lbl]
+        pso_p  = [p for lbl, p, _ in results if "PSO" in lbl and "CPU" not in lbl]
         avg_lsmc = f"{np.mean(lsmc_p):.4f}" if lsmc_p else "—"
         avg_pso  = f"{np.mean(pso_p):.4f}"  if pso_p  else "—"
         lines.append(f"| {name} | {binomial:.4f} | {mkt:.4f} | {avg_lsmc} | {avg_pso} | {icon} |")
@@ -221,7 +266,7 @@ def main():
         name   = case[0]
         params = case[1:]   # (S0, K, r, sigma, T, opttype, impl_premium, nPath, nPeriod, nFish)
         results, binomial, mkt = run_case(name, *params)
-        case_pass = all(_pass(p, binomial) == "PASS" for _, p, _ in results)
+        case_pass = all(_pass(p, binomial) == "PASS" for lbl, p, _ in results if "CPU" not in lbl)
         all_pass  = all_pass and case_pass
         summary.append((name, params, binomial, mkt, results, case_pass))
 
@@ -232,7 +277,7 @@ def main():
     for name, _, binomial, mkt, results, ok in summary:
         status = "PASS" if ok else "FAIL"
         lsmc_prices = [p for lbl, p, _ in results if "LSMC" in lbl]
-        pso_prices  = [p for lbl, p, _ in results if "PSO"  in lbl]
+        pso_prices  = [p for lbl, p, _ in results if "PSO" in lbl and "CPU" not in lbl]
         avg_lsmc = np.mean(lsmc_prices) if lsmc_prices else float("nan")
         avg_pso  = np.mean(pso_prices)  if pso_prices  else float("nan")
         print(f"  [{status}]  {name:<40}  binomial={binomial:.4f}  mkt={mkt:.4f}"
